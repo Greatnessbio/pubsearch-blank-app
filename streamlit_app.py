@@ -4,75 +4,72 @@ import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
 import random
-import socket
 import time
-import warnings
 
-warnings.filterwarnings('ignore')
-
-# User agents list (unchanged from the original script)
+# User agents list (abbreviated for brevity)
 user_agents = [
     "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.1 (KHTML, like Gecko) Chrome/22.0.1207.1 Safari/537.1",
-    # ... (include all user agents from the original script)
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:55.0) Gecko/20100101 Firefox/55.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/60.0.3112.101 Safari/537.36"
 ]
 
 def make_header():
     return {'User-Agent': random.choice(user_agents)}
 
-async def extract_by_article(url, session, semaphore):
-    async with semaphore, session.get(url) as response:
-        data = await response.text()
-        soup = BeautifulSoup(data, "lxml")
-        
-        # Extract article data (similar to the original script)
-        abstract = soup.find('div', {'class': 'abstract-content selected'})
-        abstract = ' '.join([p.text.strip() for p in abstract.find_all('p')]) if abstract else 'NO_ABSTRACT'
-        
-        affiliations = soup.find('ul', {'class': 'item-list'})
-        affiliations = [li.get_text().strip() for li in affiliations.find_all('li')] if affiliations else 'NO_AFFILIATIONS'
-        
-        keywords = soup.find('div', {'class': 'abstract'})
-        if keywords and keywords.find_all('strong', {'class': 'sub-title'})[-1].text.strip() == 'Keywords:':
-            keywords = keywords.find_all('p')[-1].get_text().replace('Keywords:', '').strip()
-        else:
-            keywords = 'NO_KEYWORDS'
-        
-        title = soup.find('meta', {'name': 'citation_title'})
-        title = title['content'].strip('[]') if title else 'NO_TITLE'
-        
-        authors = soup.find('div', {'class': 'authors-list'})
-        authors = ', '.join([a.text for a in authors.find_all('a', {'class': 'full-name'})]) if authors else 'NO_AUTHOR'
-        
-        journal = soup.find('meta', {'name': 'citation_journal_title'})
-        journal = journal['content'] if journal else 'NO_JOURNAL'
-        
-        date = soup.find('time', {'class': 'citation-year'})
-        date = date.text if date else 'NO_DATE'
-
-        return {
-            'url': url,
-            'title': title,
-            'authors': authors,
-            'abstract': abstract,
-            'affiliations': affiliations,
-            'journal': journal,
-            'keywords': keywords,
-            'date': date
-        }
+async def extract_by_article(url, semaphore):
+    async with semaphore:
+        async with aiohttp.ClientSession(headers=make_header()) as session:
+            async with session.get(url) as response:
+                data = await response.text()
+                soup = BeautifulSoup(data, "lxml")
+                
+                title = soup.find('h1', {'class': 'heading-title'})
+                title = title.text.strip() if title else 'N/A'
+                
+                abstract_div = soup.find('div', {'id': 'abstract'})
+                abstract = 'N/A'
+                if abstract_div:
+                    abstract_content = abstract_div.find('div', {'class': 'abstract-content selected'})
+                    if abstract_content:
+                        abstract = ' '.join([p.text.strip() for p in abstract_content.find_all('p')])
+                
+                authors = []
+                authors_div = soup.find('div', {'class': 'authors-list'})
+                if authors_div:
+                    for author in authors_div.find_all('span', {'class': 'authors-list-item'}):
+                        name = author.find('a', {'class': 'full-name'})
+                        if name:
+                            authors.append(name.text.strip())
+                
+                date_elem = soup.find('span', {'class': 'cit'}) or soup.find('time', {'class': 'citation-year'})
+                date = date_elem.text.strip() if date_elem else 'N/A'
+                
+                journal_elem = soup.find('button', {'id': 'full-view-journal-trigger'}) or soup.find('span', {'class': 'journal-title'})
+                journal = journal_elem.text.strip() if journal_elem else 'N/A'
+                
+                return {
+                    'url': url,
+                    'title': title,
+                    'authors': ', '.join(authors),
+                    'abstract': abstract,
+                    'date': date,
+                    'journal': journal
+                }
 
 async def get_pmids(page, keyword, session):
-    page_url = f'https://pubmed.ncbi.nlm.nih.gov/?term={keyword}&page={page}'
-    async with session.get(page_url) as response:
+    url = f'https://pubmed.ncbi.nlm.nih.gov/?term={keyword}&page={page}'
+    async with session.get(url) as response:
         data = await response.text()
         soup = BeautifulSoup(data, "lxml")
         pmids = soup.find('meta', {'name': 'log_displayeduids'})
-        return [f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" for pmid in pmids['content'].split(',')] if pmids else []
+        if pmids:
+            return [f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" for pmid in pmids['content'].split(',')]
+        return []
 
 async def scrape_pubmed(keywords, start_year, end_year, max_pages):
-    conn = aiohttp.TCPConnector(family=socket.AF_INET)
-    async with aiohttp.ClientSession(headers=make_header(), connector=conn) as session:
-        semaphore = asyncio.Semaphore(10)  # Limit concurrent requests
-        all_urls = []
+    semaphore = asyncio.Semaphore(10)  # Limit concurrent requests
+    all_urls = []
+    async with aiohttp.ClientSession(headers=make_header()) as session:
         for keyword in keywords:
             for page in range(1, max_pages + 1):
                 urls = await get_pmids(page, f"{keyword} AND ({start_year}:{end_year}[dp])", session)
@@ -80,10 +77,10 @@ async def scrape_pubmed(keywords, start_year, end_year, max_pages):
                 if len(urls) < 10:  # Less than 10 results on a page means it's the last page
                     break
         
-        tasks = [extract_by_article(url, session, semaphore) for url in all_urls]
-        articles_data = await asyncio.gather(*tasks)
+        tasks = [extract_by_article(url, semaphore) for url in all_urls]
+        results = await asyncio.gather(*tasks)
     
-    return pd.DataFrame(articles_data)
+    return pd.DataFrame(results)
 
 def main():
     st.title("PubMed Article Scraper")
@@ -97,10 +94,12 @@ def main():
     if st.button("Scrape Articles"):
         keywords_list = [k.strip() for k in keywords.split('\n') if k.strip()]
         
+        start_time = time.time()
         with st.spinner("Scraping articles... This may take a while."):
             df = asyncio.run(scrape_pubmed(keywords_list, start_year, end_year, max_pages))
+        end_time = time.time()
         
-        st.success(f"Scraped {len(df)} articles!")
+        st.success(f"Scraped {len(df)} articles in {end_time - start_time:.2f} seconds!")
         
         st.dataframe(df)
         
