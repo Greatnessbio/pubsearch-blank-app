@@ -39,109 +39,119 @@ def make_header():
 async def extract_by_article(url, semaphore):
     async with semaphore:
         async with aiohttp.ClientSession(headers=make_header()) as session:
-            async with session.get(url) as response:
-                data = await response.text()
-                soup = BeautifulSoup(data, "lxml")
-                
-                def get_text(element):
-                    return element.text.strip() if element else 'N/A'
-
-                title = get_text(soup.find('h1', {'class': 'heading-title'}))
-                
-                abstract_div = soup.find('div', {'id': 'abstract'})
-                
-                background = results = conclusion = keywords = abstract = 'N/A'
-                
-                if abstract_div:
-                    abstract_content = abstract_div.find('div', {'class': 'abstract-content selected'})
-                    if abstract_content:
-                        abstract = ' '.join([p.text.strip() for p in abstract_content.find_all('p')])
-                        
-                        for p in abstract_content.find_all('p'):
-                            strong = p.find('strong', class_='sub-title')
-                            if strong:
-                                section_title = strong.text.strip().lower()
-                                content = p.text.replace(strong.text, '').strip()
-                                
-                                if 'background' in section_title:
-                                    background = content
-                                elif 'results' in section_title:
-                                    results = content
-                                elif 'conclusion' in section_title:
-                                    conclusion = content
+            try:
+                async with session.get(url, timeout=30) as response:
+                    if response.status != 200:
+                        st.warning(f"Failed to fetch {url}: HTTP {response.status}")
+                        return None
+                    data = await response.text()
+                    soup = BeautifulSoup(data, "lxml")
                     
-                    if background == 'N/A' and abstract != 'N/A':
-                        background = abstract
+                    def get_text(element):
+                        return element.text.strip() if element else 'N/A'
 
-                keywords_p = soup.find('p', class_='keywords')
-                if keywords_p:
-                    keywords = keywords_p.text.replace('Keywords:', '').strip()
-                else:
-                    keyword_match = re.search(r'Keywords?:?\s*(.*?)(?:\.|$)', abstract, re.IGNORECASE | re.DOTALL)
-                    if keyword_match:
-                        keywords = keyword_match.group(1).strip()
-                
-                date_elem = soup.find('span', {'class': 'cit'}) or soup.find('time', {'class': 'citation-year'})
-                date = get_text(date_elem)
-                
-                journal_elem = soup.find('button', {'id': 'full-view-journal-trigger'}) or soup.find('span', {'class': 'journal-title'})
-                journal = get_text(journal_elem)
-                
-                doi_elem = soup.find('span', {'class': 'citation-doi'})
-                doi = get_text(doi_elem).replace('doi:', '').strip()
+                    title = get_text(soup.find('h1', {'class': 'heading-title'}))
+                    
+                    abstract_div = soup.find('div', {'id': 'abstract'})
+                    
+                    background = results = conclusion = keywords = abstract = 'N/A'
+                    
+                    if abstract_div:
+                        abstract_content = abstract_div.find('div', {'class': 'abstract-content selected'})
+                        if abstract_content:
+                            abstract = ' '.join([p.text.strip() for p in abstract_content.find_all('p')])
+                            
+                            for p in abstract_content.find_all('p'):
+                                strong = p.find('strong', class_='sub-title')
+                                if strong:
+                                    section_title = strong.text.strip().lower()
+                                    content = p.text.replace(strong.text, '').strip()
+                                    
+                                    if 'background' in section_title:
+                                        background = content
+                                    elif 'results' in section_title:
+                                        results = content
+                                    elif 'conclusion' in section_title:
+                                        conclusion = content
+                        
+                        if background == 'N/A' and abstract != 'N/A':
+                            background = abstract
 
-                copyright_elem = soup.find('div', class_='copyright-section') or soup.find('p', class_='copyright')
-                copyright_text = get_text(copyright_elem)
+                    keywords_p = soup.find('p', class_='keywords')
+                    if keywords_p:
+                        keywords = keywords_p.text.replace('Keywords:', '').strip()
+                    else:
+                        keyword_match = re.search(r'Keywords?:?\s*(.*?)(?:\.|$)', abstract, re.IGNORECASE | re.DOTALL)
+                        if keyword_match:
+                            keywords = keyword_match.group(1).strip()
+                    
+                    date_elem = soup.find('span', {'class': 'cit'}) or soup.find('time', {'class': 'citation-year'})
+                    date = get_text(date_elem)
+                    
+                    journal_elem = soup.find('button', {'id': 'full-view-journal-trigger'}) or soup.find('span', {'class': 'journal-title'})
+                    journal = get_text(journal_elem)
+                    
+                    doi_elem = soup.find('span', {'class': 'citation-doi'})
+                    doi = get_text(doi_elem).replace('doi:', '').strip()
 
-                affiliations = {}
-                affiliations_div = soup.find('div', {'class': 'affiliations'})
-                if affiliations_div:
-                    for li in affiliations_div.find_all('li'):
-                        sup = li.find('sup')
-                        if sup:
-                            aff_num = sup.text.strip()
-                            aff_text = li.text.replace(aff_num, '').strip()
-                            affiliations[aff_num] = aff_text
+                    copyright_elem = soup.find('div', class_='copyright-section') or soup.find('p', class_='copyright')
+                    copyright_text = get_text(copyright_elem)
 
-                authors_div = soup.find('div', {'class': 'authors-list'})
-                author_affiliations = []
-                if authors_div:
-                    for author in authors_div.find_all('span', {'class': 'authors-list-item'}):
-                        name = author.find('a', {'class': 'full-name'})
-                        if name:
-                            author_name = name.text.strip()
-                            author_aff_nums = [sup.text.strip() for sup in author.find_all('sup')]
-                            author_affs = [affiliations.get(num, '') for num in author_aff_nums]
-                            author_affiliations.append((author_name, '; '.join(author_affs)))
+                    affiliations = {}
+                    affiliations_div = soup.find('div', {'class': 'affiliations'})
+                    if affiliations_div:
+                        for li in affiliations_div.find_all('li'):
+                            sup = li.find('sup')
+                            if sup:
+                                aff_num = sup.text.strip()
+                                aff_text = li.text.replace(aff_num, '').strip()
+                                affiliations[aff_num] = aff_text
 
-                pmid_elem = soup.find('strong', string='PMID:')
-                pmid = pmid_elem.next_sibling.strip() if pmid_elem else 'N/A'
+                    authors_div = soup.find('div', {'class': 'authors-list'})
+                    author_affiliations = []
+                    if authors_div:
+                        for author in authors_div.find_all('span', {'class': 'authors-list-item'}):
+                            name = author.find('a', {'class': 'full-name'})
+                            if name:
+                                author_name = name.text.strip()
+                                author_aff_nums = [sup.text.strip() for sup in author.find_all('sup')]
+                                author_affs = [affiliations.get(num, '') for num in author_aff_nums]
+                                author_affiliations.append((author_name, '; '.join(author_affs)))
 
-                pub_type_elem = soup.find('span', {'class': 'publication-type'})
-                pub_type = get_text(pub_type_elem)
+                    pmid_elem = soup.find('strong', string='PMID:')
+                    pmid = pmid_elem.next_sibling.strip() if pmid_elem else 'N/A'
 
-                mesh_terms = []
-                mesh_div = soup.find('div', {'class': 'mesh-terms'})
-                if mesh_div:
-                    mesh_terms = [term.text.strip() for term in mesh_div.find_all('li')]
+                    pub_type_elem = soup.find('span', {'class': 'publication-type'})
+                    pub_type = get_text(pub_type_elem)
 
-                return {
-                    'url': url,
-                    'title': title,
-                    'authors': author_affiliations,
-                    'abstract': abstract,
-                    'background': background,
-                    'results': results,
-                    'conclusion': conclusion,
-                    'keywords': keywords,
-                    'date': date,
-                    'journal': journal,
-                    'doi': doi,
-                    'copyright': copyright_text,
-                    'pmid': pmid,
-                    'publication_type': pub_type,
-                    'mesh_terms': mesh_terms
-                }
+                    mesh_terms = []
+                    mesh_div = soup.find('div', {'class': 'mesh-terms'})
+                    if mesh_div:
+                        mesh_terms = [term.text.strip() for term in mesh_div.find_all('li')]
+
+                    return {
+                        'url': url,
+                        'title': title,
+                        'authors': author_affiliations,
+                        'abstract': abstract,
+                        'background': background,
+                        'results': results,
+                        'conclusion': conclusion,
+                        'keywords': keywords,
+                        'date': date,
+                        'journal': journal,
+                        'doi': doi,
+                        'copyright': copyright_text,
+                        'pmid': pmid,
+                        'publication_type': pub_type,
+                        'mesh_terms': mesh_terms
+                    }
+            except asyncio.TimeoutError:
+                st.warning(f"Timeout while fetching {url}")
+                return None
+            except Exception as e:
+                st.warning(f"Error processing {url}: {str(e)}")
+                return None
 
 async def get_pmids(page, query, filters, session):
     base_url = 'https://pubmed.ncbi.nlm.nih.gov/'
@@ -166,9 +176,16 @@ async def scrape_pubmed(query, filters, num_pages):
             if len(urls) < 10:  # Less than 10 results on a page means it's the last page
                 break
     
-    tasks = [extract_by_article(url, semaphore) for url in all_urls]
-    results = await asyncio.gather(*tasks)
-    return pd.DataFrame(results)
+    results = []
+    for url in all_urls:
+        try:
+            result = await extract_by_article(url, semaphore)
+            if result:
+                results.append(result)
+        except Exception as e:
+            st.warning(f"Error processing {url}: {str(e)}")
+    
+    return results
 
 def parse_author_info(authors):
     parsed_authors = []
@@ -253,7 +270,8 @@ def main():
 
         start_time = time.time()
         with st.spinner("Searching PubMed and retrieving results..."):
-            df = asyncio.run(scrape_pubmed(query, filters_str, num_pages))
+            results = asyncio.run(scrape_pubmed(query, filters_str, num_pages))
+            df = pd.DataFrame(results)
         end_time = time.time()
         
         if not df.empty:
